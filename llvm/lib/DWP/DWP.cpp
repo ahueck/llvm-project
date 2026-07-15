@@ -774,6 +774,8 @@ Error write(DWPWriter &Out, ArrayRef<std::string> Inputs,
       if (auto *ELFObj = dyn_cast<ELFObjectFileBase>(&Obj)) {
         Out.setMachine(ELFObj->getEMachine());
         Out.setOSABI(ELFObj->getEIdentOSABI());
+        Out.setABIVersion(ELFObj->getEIdentABIVersion());
+        Out.setEFlags(ELFObj->getPlatformFlags());
       } else if (Obj.isWasm()) {
         Out.setIsWASM(true);
       }
@@ -1149,8 +1151,8 @@ Error DWPWriter::writeELF(raw_pwrite_stream &OS) {
   uint32_t NumSections = SymtabIdx + 1;
 
   // --- Write ELF header ---
-  ELF::writeHeader(Wr, /*Is64Bit=*/true, ELFOSABI, /*ABIVersion=*/0, ELFMachine,
-                   /*EFlags=*/0, SHTOffset, NumSections, StrtabIdx);
+  ELF::writeHeader(Wr, /*Is64Bit=*/true, ELFOSABI, ELFABIVersion, ELFMachine,
+                   ELFEFlags, SHTOffset, NumSections, StrtabIdx);
 
   // --- Write section data ---
   for (const auto &E : Entries)

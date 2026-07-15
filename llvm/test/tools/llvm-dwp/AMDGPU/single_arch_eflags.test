@@ -1,11 +1,11 @@
-## AMDGPU e_flags are not preserved in the output header yet.
-# XFAIL: *
+## AMDGPU ELF identity fields are preserved in the output header.
 
 # RUN: yaml2obj %p/Inputs/gfx1031.yaml -o %t.gfx1031.dwo
 # RUN: llvm-dwp %t.gfx1031.dwo -o %t.dwp
 # RUN: llvm-readobj --file-headers %t.dwp | FileCheck %s
 
-# CHECK:      Machine: EM_AMDGPU
 # CHECK:      OS/ABI: AMDGPU_HSA
+# CHECK:      ABIVersion: 3
+# CHECK:      Machine: EM_AMDGPU
 # CHECK:      Flags [
 # CHECK-NEXT:   EF_AMDGPU_MACH_AMDGCN_GFX1031

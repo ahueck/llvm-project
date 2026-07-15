@@ -101,6 +101,8 @@ class LLVM_ABI DWPWriter {
   DWPSectionId CurrentSection = DS_Info;
   uint16_t ELFMachine = 0;
   uint8_t ELFOSABI = 0;
+  uint8_t ELFABIVersion = 0;
+  uint32_t ELFEFlags = 0;
   bool IsWASM = false;
 
 public:
@@ -108,6 +110,8 @@ public:
 
   void setMachine(uint16_t Machine) { ELFMachine = Machine; }
   void setOSABI(uint8_t OSABI) { ELFOSABI = OSABI; }
+  void setABIVersion(uint8_t ABIVersion) { ELFABIVersion = ABIVersion; }
+  void setEFlags(uint32_t EFlags) { ELFEFlags = EFlags; }
   void setIsWASM(bool V) { IsWASM = V; }
 
   SmallVectorImpl<char> &getSectionBuffer(DWPSectionId Id) {
