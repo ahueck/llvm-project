@@ -9,6 +9,9 @@ def version : F<"version", "Display the version of this program">;
 
 def execFileNames : S<"e", "Specify the executable/library files to get the list of *.dwo from.">, MetaVarName<"<filename>">;
 def outputFileName : S<"o", "Specify the output file.">, MetaVarName<"<filename>">;
+def splitByArch
+    : F<"split-by-arch", "Partition inputs by target architecture and emit one "
+                         "DWP file per architecture.">;
 def continueOnCuIndexOverflow : Flag<["-", "--"], "continue-on-cu-index-overflow">;
 def continueOnCuIndexOverflow_EQ : Joined<["-", "--"], "continue-on-cu-index-overflow=">,
   HelpText<"default = continue, This turns an error when offset \n"

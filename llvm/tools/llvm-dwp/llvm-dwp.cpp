@@ -206,13 +206,13 @@ assignOutputPaths(ArrayRef<DWPInputGroup> Groups, StringRef OutputFilename) {
   return OutputGroups;
 }
 
-static int writeOutputGroup(const DWPOutputGroup &Group,
-                            OnCuIndexOverflow OverflowOptValue,
-                            Dwarf64StrOffsetsPromotion Dwarf64StrOffsetsValue) {
+static int writeOutputFile(StringRef Path, ArrayRef<std::string> Inputs,
+                           OnCuIndexOverflow OverflowOptValue,
+                           Dwarf64StrOffsetsPromotion Dwarf64StrOffsetsValue) {
   std::error_code EC;
-  ToolOutputFile OutFile(Group.Path, EC, sys::fs::OF_None);
+  ToolOutputFile OutFile(Path, EC, sys::fs::OF_None);
   if (EC)
-    return error(Twine(Group.Path) + ": " + EC.message(), "dwp output init");
+    return error(Twine(Path) + ": " + EC.message(), "dwp output init");
   std::optional<buffer_ostream> BOS;
   raw_pwrite_stream *OS;
   if (OutFile.os().supportsSeeking()) {
@@ -226,7 +226,7 @@ static int writeOutputGroup(const DWPOutputGroup &Group,
   DWPWriter Writer;
 
   auto Err =
-      write(Writer, Group.Inputs, OverflowOptValue, Dwarf64StrOffsetsValue, OS);
+      write(Writer, Inputs, OverflowOptValue, Dwarf64StrOffsetsValue, OS);
   if (Err) {
     logAllUnhandledErrors(std::move(Err), WithColor::error());
     return 1;
@@ -240,7 +240,8 @@ writeOutputGroups(ArrayRef<DWPOutputGroup> Groups,
                   OnCuIndexOverflow OverflowOptValue,
                   Dwarf64StrOffsetsPromotion Dwarf64StrOffsetsValue) {
   for (const auto &Group : Groups) {
-    if (writeOutputGroup(Group, OverflowOptValue, Dwarf64StrOffsetsValue))
+    if (writeOutputFile(Group.Path, Group.Inputs, OverflowOptValue,
+                        Dwarf64StrOffsetsValue))
       return 1;
   }
   return 0;
@@ -271,6 +272,7 @@ int llvm_dwp_main(int argc, char **argv, const llvm::ToolContext &) {
     std::exit(0);
   }
 
+  bool SplitByArch = Args.hasArg(OPT_splitByArch);
   OutputFilename = Args.getLastArgValue(OPT_outputFileName, "");
   if (Arg *Arg = Args.getLastArg(OPT_continueOnCuIndexOverflow,
                                  OPT_continueOnCuIndexOverflow_EQ)) {
@@ -369,6 +371,10 @@ int llvm_dwp_main(int argc, char **argv, const llvm::ToolContext &) {
                             IsNonDiscarded);
     }
   }
+
+  if (!SplitByArch)
+    return writeOutputFile(OutputFilename, DWOFilenames, OverflowOptValue,
+                           Dwarf64StrOffsetsValue);
 
   auto Groups = groupInputsByArch(DWOFilenames);
   if (!Groups) {

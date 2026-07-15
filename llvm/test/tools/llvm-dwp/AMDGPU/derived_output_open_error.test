@@ -4,7 +4,7 @@
 # RUN: yaml2obj %p/Inputs/gfx1031.yaml -o %t.gfx1031.dwo
 # RUN: rm -rf %t.gfx1031.dwp
 # RUN: mkdir %t.gfx1031.dwp
-# RUN: not llvm-dwp %t.host.dwo %t.gfx1031.dwo -o %t.dwp 2>&1 | FileCheck %s
+# RUN: not llvm-dwp --split-by-arch %t.host.dwo %t.gfx1031.dwo -o %t.dwp 2>&1 | FileCheck %s
 
 # CHECK: while processing dwp output init:
 # CHECK-NEXT: error: {{.*}}.gfx1031.dwp: {{.*}}

@@ -4,7 +4,7 @@
 # RUN: yaml2obj %p/Inputs/gfx90a.yaml -o %t.gfx90a.dwo
 
 ## Each arch gets its own output.
-# RUN: llvm-dwp %t.gfx1031.dwo %t.gfx90a.dwo -o %t.dwp
+# RUN: llvm-dwp --split-by-arch %t.gfx1031.dwo %t.gfx90a.dwo -o %t.dwp
 
 # RUN: llvm-readobj --file-headers %t.gfx1031.dwp | FileCheck %s --check-prefix=GFX1031
 # GFX1031: Machine: EM_AMDGPU

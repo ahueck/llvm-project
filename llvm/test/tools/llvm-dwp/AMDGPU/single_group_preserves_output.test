@@ -2,8 +2,11 @@
 
 # RUN: yaml2obj %p/Inputs/gfx1031.yaml -o %t.gfx1031.dwo
 # RUN: llvm-dwp %t.gfx1031.dwo -o %t.dwp
+# RUN: llvm-dwp --split-by-arch %t.gfx1031.dwo -o %t.split.dwp
 
 # RUN: llvm-readobj --file-headers %t.dwp | FileCheck %s
 # RUN: not llvm-readobj --file-headers %t.gfx1031.dwp 2>&1
+# RUN: llvm-readobj --file-headers %t.split.dwp | FileCheck %s
+# RUN: not llvm-readobj --file-headers %t.split.gfx1031.dwp 2>&1
 
 # CHECK: Machine: EM_AMDGPU
