@@ -1,0 +1,22 @@
+## AMDGPU gfx1031 split-DWARF .dwo input. DWO ID = 0x00ffeeddccbbaa99.
+## Deliberately shares its DWO ID with gfx90a.yaml to exercise the
+## cross-arch DWO-ID collision case.
+--- !ELF
+FileHeader:
+  Class:      ELFCLASS64
+  Data:       ELFDATA2LSB
+  Type:       ET_REL
+  Machine:    EM_AMDGPU
+  OSABI:      ELFOSABI_AMDGPU_HSA
+  ABIVersion: 0x3
+  Flags:      [ EF_AMDGPU_MACH_AMDGCN_GFX1031 ]
+Sections:
+  - Name:    .debug_info.dwo
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_EXCLUDE ]
+    Content: '11000000050005080000000099AABBCCDDEEFF0001'
+  - Name:    .debug_abbrev.dwo
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_EXCLUDE ]
+    Content: '011100000000'
+...

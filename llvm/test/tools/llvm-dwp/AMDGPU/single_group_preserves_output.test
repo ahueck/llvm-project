@@ -1,0 +1,9 @@
+## A single device-only group keeps the exact -o path.
+
+# RUN: yaml2obj %p/Inputs/gfx1031.yaml -o %t.gfx1031.dwo
+# RUN: llvm-dwp %t.gfx1031.dwo -o %t.dwp
+
+# RUN: llvm-readobj --file-headers %t.dwp | FileCheck %s
+# RUN: not llvm-readobj --file-headers %t.gfx1031.dwp 2>&1
+
+# CHECK: Machine: EM_AMDGPU

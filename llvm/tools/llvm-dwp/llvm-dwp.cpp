@@ -10,8 +10,10 @@
 // package files).
 //
 //===----------------------------------------------------------------------===//
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/DWP/DWP.h"
 #include "llvm/DWP/DWPError.h"
+#include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/Option.h"
@@ -20,6 +22,7 @@
 #include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ToolOutputFile.h"
+#include <iterator>
 #include <optional>
 
 using namespace llvm;
@@ -93,10 +96,154 @@ getDWOFilenames(StringRef ExecFilename) {
   return std::move(DWOPaths);
 }
 
+struct DWPArchKey {
+  std::string Label;
+
+  friend bool operator==(const DWPArchKey &LHS, const DWPArchKey &RHS) {
+    return LHS.Label == RHS.Label;
+  }
+
+  friend bool operator<(const DWPArchKey &LHS, const DWPArchKey &RHS) {
+    return LHS.Label < RHS.Label;
+  }
+};
+
+struct DWPInputGroup {
+  DWPArchKey Key;
+  std::vector<std::string> Inputs;
+};
+
+struct DWPOutputGroup {
+  DWPArchKey Key;
+  ArrayRef<std::string> Inputs;
+  std::string Label;
+  std::string Path;
+};
+
+static DWPArchKey getArchKey(const object::ObjectFile &Obj) {
+  const auto *ELFObj = dyn_cast<object::ELFObjectFileBase>(&Obj);
+  if (!ELFObj)
+    return {};
+  // tryGetCPUName() maps the ELF identity to a target CPU name for us:
+  // "gfx1031"/"gfx90a" for AMDGPU, "sm_80"/... for CUDA, and std::nullopt for
+  // targets without a CPU concept (e.g. host x86-64) -> no filename suffix.
+  return {ELFObj->tryGetCPUName().value_or("").str()};
+}
+
+static StringRef getArchLabel(const DWPArchKey &Key) { return Key.Label; }
+
+static Expected<SmallVector<DWPInputGroup, 4>>
+groupInputsByArch(ArrayRef<std::string> DWOFilenames) {
+  SmallVector<DWPInputGroup, 4> Groups;
+  for (const auto &Filename : DWOFilenames) {
+    auto Obj = ObjectFile::createObjectFile(Filename);
+    if (!Obj)
+      return createFileError(Filename, Obj.takeError());
+    const auto Key = getArchKey(*Obj->getBinary());
+    auto It = llvm::find_if(
+        Groups, [&](const DWPInputGroup &Group) { return Group.Key == Key; });
+    if (It == Groups.end()) {
+      Groups.emplace_back(DWPInputGroup{Key, {}});
+      It = std::prev(Groups.end());
+    }
+    It->Inputs.emplace_back(Filename);
+  }
+  llvm::stable_sort(Groups,
+                    [](const DWPInputGroup &LHS, const DWPInputGroup &RHS) {
+                      if (LHS.Key.Label.empty() != RHS.Key.Label.empty())
+                        return LHS.Key.Label.empty();
+                      return LHS.Key < RHS.Key;
+                    });
+  return Groups;
+}
+
+static std::string deriveOutputPath(StringRef OutputFilename, StringRef Label) {
+  // Host/default group keeps the user-provided -o path, e.g. "out.dwp".
+  if (Label.empty())
+    return OutputFilename.str();
+
+  SmallString<128> Path(OutputFilename);
+  StringRef Extension = sys::path::extension(Path);
+
+  // No extension: append ".<label>", e.g. "out" -> "out.gfx1031".
+  if (Extension.empty()) {
+    Path += ".";
+    Path += Label;
+    return Path.str().str();
+  }
+
+  // Existing extension: insert ".<label>" before it, e.g. "out.dwp" ->
+  // "out.gfx1031.dwp".
+  SmallString<16> NewExtension(".");
+  NewExtension += Label;
+  NewExtension += Extension;
+  sys::path::replace_extension(Path, NewExtension);
+  return Path.str().str();
+}
+
 static int error(const Twine &Error, const Twine &Context) {
   errs() << Twine("while processing ") + Context + ":\n";
   errs() << Twine("error: ") + Error + "\n";
   return 1;
+}
+
+static SmallVector<DWPOutputGroup, 4>
+assignOutputPaths(ArrayRef<DWPInputGroup> Groups, StringRef OutputFilename) {
+  SmallVector<DWPOutputGroup, 4> OutputGroups;
+  if (Groups.size() == 1) {
+    // -o name.dwp is respected even if .dwo set is from non-host target
+    // for single group.
+    OutputGroups.emplace_back(DWPOutputGroup{
+        Groups.front().Key, Groups.front().Inputs, "", OutputFilename.str()});
+  } else {
+    for (const DWPInputGroup &Group : Groups) {
+      auto Label = getArchLabel(Group.Key).str();
+      auto Path = deriveOutputPath(OutputFilename, Label);
+      OutputGroups.emplace_back(DWPOutputGroup{
+          Group.Key, Group.Inputs, std::move(Label), std::move(Path)});
+    }
+  }
+  return OutputGroups;
+}
+
+static int writeOutputGroup(const DWPOutputGroup &Group,
+                            OnCuIndexOverflow OverflowOptValue,
+                            Dwarf64StrOffsetsPromotion Dwarf64StrOffsetsValue) {
+  std::error_code EC;
+  ToolOutputFile OutFile(Group.Path, EC, sys::fs::OF_None);
+  if (EC)
+    return error(Twine(Group.Path) + ": " + EC.message(), "dwp output init");
+  std::optional<buffer_ostream> BOS;
+  raw_pwrite_stream *OS;
+  if (OutFile.os().supportsSeeking()) {
+    OS = &OutFile.os();
+  } else {
+    BOS.emplace(OutFile.os());
+    OS = &*BOS;
+  }
+
+  // Use DWPWriter for direct ELF output
+  DWPWriter Writer;
+
+  auto Err =
+      write(Writer, Group.Inputs, OverflowOptValue, Dwarf64StrOffsetsValue, OS);
+  if (Err) {
+    logAllUnhandledErrors(std::move(Err), WithColor::error());
+    return 1;
+  }
+  OutFile.keep();
+  return 0;
+}
+
+static int
+writeOutputGroups(ArrayRef<DWPOutputGroup> Groups,
+                  OnCuIndexOverflow OverflowOptValue,
+                  Dwarf64StrOffsetsPromotion Dwarf64StrOffsetsValue) {
+  for (const auto &Group : Groups) {
+    if (writeOutputGroup(Group, OverflowOptValue, Dwarf64StrOffsetsValue))
+      return 1;
+  }
+  return 0;
 }
 
 int llvm_dwp_main(int argc, char **argv, const llvm::ToolContext &) {
@@ -223,30 +370,15 @@ int llvm_dwp_main(int argc, char **argv, const llvm::ToolContext &) {
     }
   }
 
-  // Create the output file.
-  std::error_code EC;
-  ToolOutputFile OutFile(OutputFilename, EC, sys::fs::OF_None);
-  std::optional<buffer_ostream> BOS;
-  raw_pwrite_stream *OS;
-  if (EC)
-    return error(Twine(OutputFilename) + ": " + EC.message(),
-                 "dwp output init");
-  if (OutFile.os().supportsSeeking()) {
-    OS = &OutFile.os();
-  } else {
-    BOS.emplace(OutFile.os());
-    OS = &*BOS;
-  }
-
-  // Use DWPWriter for direct ELF output
-  DWPWriter Writer;
-
-  if (auto Err = write(Writer, DWOFilenames, OverflowOptValue,
-                       Dwarf64StrOffsetsValue, OS)) {
-    logAllUnhandledErrors(std::move(Err), WithColor::error());
+  auto Groups = groupInputsByArch(DWOFilenames);
+  if (!Groups) {
+    logAllUnhandledErrors(Groups.takeError(), WithColor::error());
     return 1;
   }
 
-  OutFile.keep();
+  auto OutputGroups = assignOutputPaths(*Groups, OutputFilename);
+  if (writeOutputGroups(OutputGroups, OverflowOptValue, Dwarf64StrOffsetsValue))
+    return 1;
+
   return 0;
 }

@@ -1,0 +1,6 @@
+## Duplicate DWO IDs inside one arch group still error.
+
+# RUN: yaml2obj %p/Inputs/gfx1031.yaml -o %t.gfx1031.dwo
+# RUN: not llvm-dwp %t.gfx1031.dwo %t.gfx1031.dwo -o %t.dwp 2>&1 | FileCheck %s
+
+# CHECK: error: duplicate DWO ID

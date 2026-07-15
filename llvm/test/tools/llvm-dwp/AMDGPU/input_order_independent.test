@@ -1,0 +1,15 @@
+## Input order must not affect host/default and device output paths.
+
+# RUN: yaml2obj %p/Inputs/host.yaml -o %t.host.dwo
+# RUN: yaml2obj %p/Inputs/gfx1031.yaml -o %t.gfx1031.dwo
+
+# RUN: llvm-dwp %t.host.dwo %t.gfx1031.dwo -o %t.host-first.dwp
+# RUN: llvm-readobj --file-headers %t.host-first.dwp | FileCheck %s --check-prefix=HOST
+# RUN: llvm-readobj --file-headers %t.host-first.gfx1031.dwp | FileCheck %s --check-prefix=GFX1031
+
+# RUN: llvm-dwp %t.gfx1031.dwo %t.host.dwo -o %t.device-first.dwp
+# RUN: llvm-readobj --file-headers %t.device-first.dwp | FileCheck %s --check-prefix=HOST
+# RUN: llvm-readobj --file-headers %t.device-first.gfx1031.dwp | FileCheck %s --check-prefix=GFX1031
+
+# HOST: Machine: EM_X86_64
+# GFX1031: Machine: EM_AMDGPU

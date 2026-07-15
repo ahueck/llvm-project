@@ -1,0 +1,18 @@
+## Host (x86-64) split-DWARF .dwo input. DWO ID = 0x0011223344556677.
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS64
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_X86_64
+  OSABI:   ELFOSABI_GNU
+Sections:
+  - Name:    .debug_info.dwo
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_EXCLUDE ]
+    Content: '110000000500050800000000776655443322110001'
+  - Name:    .debug_abbrev.dwo
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_EXCLUDE ]
+    Content: '011100000000'
+...
