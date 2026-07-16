@@ -10,11 +10,14 @@
 // package files).
 //
 //===----------------------------------------------------------------------===//
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/DWP/DWP.h"
 #include "llvm/DWP/DWPError.h"
 #include "llvm/Object/ELFObjectFile.h"
+#include "llvm/Object/Error.h"
 #include "llvm/Object/ObjectFile.h"
+#include "llvm/Object/OffloadBundle.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/Option.h"
 #include "llvm/Support/CommandLine.h"
@@ -57,23 +60,65 @@ public:
   DwpOptTable()
       : GenericOptTable(OptionStrTable, OptionPrefixesTable, InfoTable) {}
 };
+
+struct DWPArchKey {
+  StringRef Label;
+
+  static DWPArchKey createHostKey() { return {StringRef{}}; }
+
+  static DWPArchKey createArchKey(const object::ObjectFile &Obj) {
+    const auto *ELFObj = dyn_cast<object::ELFObjectFileBase>(&Obj);
+    if (!ELFObj)
+      return createHostKey();
+    // Only AMDGPU and NVIDIA/CUDA objects are grouped by their GPU arch name
+    // (e.g. "gfx90a", "sm_80"), everything else shares the host key.
+    switch (ELFObj->getEMachine()) {
+    case ELF::EM_AMDGPU:
+    case ELF::EM_CUDA:
+      return {ELFObj->tryGetCPUName().value_or("")};
+    default:
+      return createHostKey();
+    }
+  }
+
+  StringRef getLabel() const { return Label; }
+
+  friend bool operator==(const DWPArchKey &LHS, const DWPArchKey &RHS) {
+    return LHS.Label == RHS.Label;
+  }
+};
+
+struct DWPOutputGroup {
+  std::vector<std::string> Inputs;
+  std::string Path;
+};
+
+enum class CollectionMode : uint8_t { Flat, ByArch };
+
 } // end anonymous namespace
+
+namespace llvm {
+template <> struct DenseMapInfo<DWPArchKey> {
+  static unsigned getHashValue(const DWPArchKey &Key) {
+    return DenseMapInfo<StringRef>::getHashValue(Key.Label);
+  }
+  static bool isEqual(const DWPArchKey &LHS, const DWPArchKey &RHS) {
+    return LHS == RHS;
+  }
+};
+} // namespace llvm
 
 // Options
 static std::vector<std::string> ExecFilenames;
 static std::string OutputFilename;
 static std::string ContinueOption;
 
-static Expected<SmallVector<std::string, 16>>
-getDWOFilenames(StringRef ExecFilename) {
-  auto ErrOrObj = object::ObjectFile::createObjectFile(ExecFilename);
-  if (!ErrOrObj)
-    return ErrOrObj.takeError();
+using DWPOutputGroups = SmallMapVector<DWPArchKey, DWPOutputGroup, 4>;
 
-  const ObjectFile &Obj = *ErrOrObj.get().getBinary();
+static void appendDWOFilenames(const ObjectFile &Obj,
+                               SmallVectorImpl<std::string> &DWOPaths) {
   std::unique_ptr<DWARFContext> DWARFCtx = DWARFContext::create(Obj);
 
-  SmallVector<std::string, 16> DWOPaths;
   for (const auto &CU : DWARFCtx->compile_units()) {
     const DWARFDie &Die = CU->getUnitDIE();
     std::string DWOName = dwarf::toString(
@@ -93,67 +138,126 @@ getDWOFilenames(StringRef ExecFilename) {
       DWOPaths.push_back(std::move(DWOName));
     }
   }
-  return std::move(DWOPaths);
 }
 
-struct DWPArchKey {
-  std::string Label;
-
-  friend bool operator==(const DWPArchKey &LHS, const DWPArchKey &RHS) {
-    return LHS.Label == RHS.Label;
-  }
-
-  friend bool operator<(const DWPArchKey &LHS, const DWPArchKey &RHS) {
-    return LHS.Label < RHS.Label;
-  }
-};
-
-struct DWPInputGroup {
-  DWPArchKey Key;
-  std::vector<std::string> Inputs;
-};
-
-struct DWPOutputGroup {
-  DWPArchKey Key;
-  ArrayRef<std::string> Inputs;
-  std::string Label;
-  std::string Path;
-};
-
-static DWPArchKey getArchKey(const object::ObjectFile &Obj) {
-  const auto *ELFObj = dyn_cast<object::ELFObjectFileBase>(&Obj);
-  if (!ELFObj)
-    return {};
-  // tryGetCPUName() maps the ELF identity to a target CPU name for us:
-  // "gfx1031"/"gfx90a" for AMDGPU, "sm_80"/... for CUDA, and std::nullopt for
-  // targets without a CPU concept (e.g. host x86-64) -> no filename suffix.
-  return {ELFObj->tryGetCPUName().value_or("").str()};
+static void appendObjectDWOsToGroups(const ObjectFile &Obj, CollectionMode Mode,
+                                     DWPOutputGroups &Groups) {
+  SmallVector<std::string, 16> DWOs;
+  appendDWOFilenames(Obj, DWOs);
+  if (DWOs.empty())
+    return;
+  const DWPArchKey Key = Mode == CollectionMode::ByArch
+                             ? DWPArchKey::createArchKey(Obj)
+                             : DWPArchKey::createHostKey();
+  auto &Inputs = Groups[Key].Inputs;
+  Inputs.insert(Inputs.end(), DWOs.begin(), DWOs.end());
 }
 
-static StringRef getArchLabel(const DWPArchKey &Key) { return Key.Label; }
+namespace fatbin {
 
-static Expected<SmallVector<DWPInputGroup, 4>>
-groupInputsByArch(ArrayRef<std::string> DWOFilenames) {
-  SmallVector<DWPInputGroup, 4> Groups;
-  for (const auto &Filename : DWOFilenames) {
-    auto Obj = ObjectFile::createObjectFile(Filename);
-    if (!Obj)
-      return createFileError(Filename, Obj.takeError());
-    const auto Key = getArchKey(*Obj->getBinary());
-    auto It = llvm::find_if(
-        Groups, [&](const DWPInputGroup &Group) { return Group.Key == Key; });
-    if (It == Groups.end()) {
-      Groups.emplace_back(DWPInputGroup{Key, {}});
-      It = std::prev(Groups.end());
+static Expected<MemoryBufferRef>
+getBundleEntryBuffer(const ObjectFile &HostObj, OffloadBundleFatBin &Bundle,
+                     const OffloadBundleEntry &Entry) {
+  MemoryBufferRef Source;
+  if (Bundle.isDecompressed()) {
+    Source = Bundle.DecompressedBuffer->getMemBufferRef();
+  } else {
+    Expected<MemoryBufferRef> SourceOrErr = HostObj.getMemoryBufferRef();
+    if (!SourceOrErr)
+      return SourceOrErr.takeError();
+    Source = *SourceOrErr;
+  }
+
+  StringRef Contents = Source.getBuffer();
+  if (Entry.Offset > Contents.size())
+    return createStringError("offload bundle entry '%s' offset (%llu"
+                             ") is beyond the end of the source (%zu)",
+                             Entry.ID.c_str(),
+                             static_cast<unsigned long long>(Entry.Offset),
+                             Contents.size());
+  if (Entry.Size > Contents.size() - Entry.Offset)
+    return createStringError(
+        "offload bundle entry '%s' offset + size (%llu"
+        " + %llu"
+        ") is beyond the end of the source (%zu)",
+        Entry.ID.c_str(), static_cast<unsigned long long>(Entry.Offset),
+        static_cast<unsigned long long>(Entry.Size), Contents.size());
+
+  StringRef Slice = Contents.slice(Entry.Offset, Entry.Offset + Entry.Size);
+  return MemoryBufferRef(Slice, Entry.ID);
+}
+
+static Error addFatbinDWOsToGroups(const ObjectFile &HostObj,
+                                   StringRef HostFilename,
+                                   DWPOutputGroups &Groups) {
+  SmallVector<OffloadBundleFatBin, 4> Bundles;
+  if (Error Err = extractOffloadBundleFatBinary(HostObj, Bundles))
+    return createFileError(HostFilename, std::move(Err));
+
+  for (OffloadBundleFatBin &Bundle : Bundles) {
+    for (const OffloadBundleEntry &Entry : Bundle.getEntries()) {
+      if (Entry.Size == 0 || StringRef(Entry.ID).starts_with("host-"))
+        continue;
+
+      Expected<MemoryBufferRef> EntryBuffer =
+          getBundleEntryBuffer(HostObj, Bundle, Entry);
+      if (!EntryBuffer)
+        return createFileError(HostFilename, EntryBuffer.takeError());
+
+      Expected<std::unique_ptr<ObjectFile>> EntryObj =
+          ObjectFile::createObjectFile(*EntryBuffer);
+      if (!EntryObj) {
+        bool InvalidFileType = false;
+        Error Remaining = handleErrors(
+            EntryObj.takeError(), [&](std::unique_ptr<ECError> EC) -> Error {
+              if (EC->convertToErrorCode() == object_error::invalid_file_type) {
+                InvalidFileType = true;
+                return Error::success();
+              }
+              return Error(std::move(EC));
+            });
+        if (InvalidFileType)
+          continue;
+        return createFileError(HostFilename, std::move(Remaining));
+      }
+
+      appendObjectDWOsToGroups(**EntryObj, CollectionMode::ByArch, Groups);
     }
-    It->Inputs.emplace_back(Filename);
   }
-  llvm::stable_sort(Groups,
-                    [](const DWPInputGroup &LHS, const DWPInputGroup &RHS) {
-                      if (LHS.Key.Label.empty() != RHS.Key.Label.empty())
-                        return LHS.Key.Label.empty();
-                      return LHS.Key < RHS.Key;
-                    });
+
+  return Error::success();
+}
+
+} // namespace fatbin
+
+static Expected<DWPOutputGroups>
+collectInputGroups(ArrayRef<std::string> DWOFilenames,
+                   ArrayRef<std::string> ExecFilenames, CollectionMode Mode) {
+  DWPOutputGroups Groups;
+  if (Mode == CollectionMode::ByArch) {
+    for (const auto &Filename : DWOFilenames) {
+      auto Obj = ObjectFile::createObjectFile(Filename);
+      if (!Obj)
+        return createFileError(Filename, Obj.takeError());
+      const DWPArchKey Key = DWPArchKey::createArchKey(*Obj->getBinary());
+      Groups[Key].Inputs.push_back(Filename);
+    }
+  } else {
+    Groups[DWPArchKey::createHostKey()].Inputs = DWOFilenames.vec();
+  }
+
+  for (const auto &ExecFilename : ExecFilenames) {
+    auto Obj = ObjectFile::createObjectFile(ExecFilename);
+    if (!Obj)
+      return createFileError(ExecFilename, Obj.takeError());
+
+    appendObjectDWOsToGroups(*Obj->getBinary(), Mode, Groups);
+
+    if (Mode == CollectionMode::ByArch)
+      if (Error Err = fatbin::addFatbinDWOsToGroups(*Obj->getBinary(),
+                                                    ExecFilename, Groups))
+        return std::move(Err);
+  }
   return Groups;
 }
 
@@ -187,23 +291,18 @@ static int error(const Twine &Error, const Twine &Context) {
   return 1;
 }
 
-static SmallVector<DWPOutputGroup, 4>
-assignOutputPaths(ArrayRef<DWPInputGroup> Groups, StringRef OutputFilename) {
-  SmallVector<DWPOutputGroup, 4> OutputGroups;
+static void assignOutputPaths(DWPOutputGroups &Groups,
+                              StringRef OutputFilename) {
   if (Groups.size() == 1) {
     // -o name.dwp is respected even if .dwo set is from non-host target
     // for single group.
-    OutputGroups.emplace_back(DWPOutputGroup{
-        Groups.front().Key, Groups.front().Inputs, "", OutputFilename.str()});
+    DWPOutputGroup &Group = Groups.front().second;
+    Group.Path = OutputFilename.str();
   } else {
-    for (const DWPInputGroup &Group : Groups) {
-      auto Label = getArchLabel(Group.Key).str();
-      auto Path = deriveOutputPath(OutputFilename, Label);
-      OutputGroups.emplace_back(DWPOutputGroup{
-          Group.Key, Group.Inputs, std::move(Label), std::move(Path)});
+    for (auto &[Key, Group] : Groups) {
+      Group.Path = deriveOutputPath(OutputFilename, Key.getLabel());
     }
   }
-  return OutputGroups;
 }
 
 static int writeOutputFile(StringRef Path, ArrayRef<std::string> Inputs,
@@ -236,10 +335,41 @@ static int writeOutputFile(StringRef Path, ArrayRef<std::string> Inputs,
 }
 
 static int
-writeOutputGroups(ArrayRef<DWPOutputGroup> Groups,
-                  OnCuIndexOverflow OverflowOptValue,
-                  Dwarf64StrOffsetsPromotion Dwarf64StrOffsetsValue) {
-  for (const auto &Group : Groups) {
+emitOutputForGroups(DWPOutputGroups &Groups, StringRef OutputFilename,
+                    bool HasValidDiscardPrefix,
+                    StringRef CanonicalDiscardPrefix,
+                    OnCuIndexOverflow OverflowOptValue,
+                    Dwarf64StrOffsetsPromotion Dwarf64StrOffsetsValue) {
+  if (llvm::none_of(Groups, [](const auto &Group) {
+        return !Group.second.Inputs.empty();
+      })) {
+    WithColor::defaultWarningHandler(make_error<DWPError>(
+        "executable file does not contain any references to dwo files"));
+    return 0;
+  }
+
+  if (HasValidDiscardPrefix) {
+    const auto PrioritizeNonDiscardedInputs =
+        [&](const std::string &Name) -> bool {
+      SmallString<256> CanonicalDWO;
+      if (sys::fs::real_path(Name, CanonicalDWO))
+        return true;
+      StringRef DWORef(CanonicalDWO);
+      if (!DWORef.starts_with(CanonicalDiscardPrefix))
+        return true;
+      if (DWORef.size() == CanonicalDiscardPrefix.size())
+        return false;
+      if (sys::path::is_separator(DWORef[CanonicalDiscardPrefix.size()]))
+        return false;
+      return true;
+    };
+    for (auto &[Key, Group] : Groups)
+      std::stable_partition(Group.Inputs.begin(), Group.Inputs.end(),
+                            PrioritizeNonDiscardedInputs);
+  }
+
+  assignOutputPaths(Groups, OutputFilename);
+  for (const auto &[Key, Group] : Groups) {
     if (writeOutputFile(Group.Path, Group.Inputs, OverflowOptValue,
                         Dwarf64StrOffsetsValue))
       return 1;
@@ -272,7 +402,7 @@ int llvm_dwp_main(int argc, char **argv, const llvm::ToolContext &) {
     std::exit(0);
   }
 
-  bool SplitByArch = Args.hasArg(OPT_splitByArch);
+  const bool SplitByArch = Args.hasArg(OPT_splitByArch);
   OutputFilename = Args.getLastArgValue(OPT_outputFileName, "");
   if (Arg *Arg = Args.getLastArg(OPT_continueOnCuIndexOverflow,
                                  OPT_continueOnCuIndexOverflow_EQ)) {
@@ -320,71 +450,30 @@ int llvm_dwp_main(int argc, char **argv, const llvm::ToolContext &) {
   for (const llvm::opt::Arg *A : Args.filtered(OPT_INPUT))
     DWOFilenames.emplace_back(A->getValue());
 
-  for (const auto &ExecFilename : ExecFilenames) {
-    auto DWOs = getDWOFilenames(ExecFilename);
-    if (!DWOs) {
-      logAllUnhandledErrors(
-          handleErrors(DWOs.takeError(),
-                       [&](std::unique_ptr<ECError> EC) -> Error {
-                         return createFileError(ExecFilename,
-                                                Error(std::move(EC)));
-                       }),
-          WithColor::error());
-      return 1;
-    }
-    DWOFilenames.insert(DWOFilenames.end(),
-                        std::make_move_iterator(DWOs->begin()),
-                        std::make_move_iterator(DWOs->end()));
-  }
-
-  if (DWOFilenames.empty()) {
-    WithColor::defaultWarningHandler(make_error<DWPError>(
-        "executable file does not contain any references to dwo files"));
-    return 0;
-  }
-
   StringRef DiscardPrefix = Args.getLastArgValue(OPT_prioritizeDiscardPath, "");
+  SmallString<256> CanonicalDiscardPrefix;
+  bool HasValidDiscardPrefix = false;
   if (OverflowOptValue == OnCuIndexOverflow::SoftStop &&
       !DiscardPrefix.empty()) {
-    SmallString<256> CanonicalDiscardPrefix(DiscardPrefix);
     if (std::error_code EC =
             sys::fs::real_path(DiscardPrefix, CanonicalDiscardPrefix)) {
       WithColor::warning() << "invalid --prioritize-discard-path '"
                            << DiscardPrefix << "': " << EC.message()
                            << "; ignoring option.\n";
     } else {
-      StringRef PrefixRef(CanonicalDiscardPrefix);
-      auto IsNonDiscarded = [&](const std::string &Name) {
-        SmallString<256> CanonicalDWO;
-        if (sys::fs::real_path(Name, CanonicalDWO))
-          return true;
-        StringRef DWORef(CanonicalDWO);
-        if (!DWORef.starts_with(PrefixRef))
-          return true;
-        if (DWORef.size() == PrefixRef.size())
-          return false;
-        if (sys::path::is_separator(DWORef[PrefixRef.size()]))
-          return false;
-        return true;
-      };
-      std::stable_partition(DWOFilenames.begin(), DWOFilenames.end(),
-                            IsNonDiscarded);
+      HasValidDiscardPrefix = true;
     }
   }
 
-  if (!SplitByArch)
-    return writeOutputFile(OutputFilename, DWOFilenames, OverflowOptValue,
-                           Dwarf64StrOffsetsValue);
-
-  auto Groups = groupInputsByArch(DWOFilenames);
-  if (!Groups) {
-    logAllUnhandledErrors(Groups.takeError(), WithColor::error());
+  const CollectionMode Mode =
+      SplitByArch ? CollectionMode::ByArch : CollectionMode::Flat;
+  auto GroupsOrErr = collectInputGroups(DWOFilenames, ExecFilenames, Mode);
+  if (!GroupsOrErr) {
+    logAllUnhandledErrors(GroupsOrErr.takeError(), WithColor::error());
     return 1;
   }
 
-  auto OutputGroups = assignOutputPaths(*Groups, OutputFilename);
-  if (writeOutputGroups(OutputGroups, OverflowOptValue, Dwarf64StrOffsetsValue))
-    return 1;
-
-  return 0;
+  return emitOutputForGroups(*GroupsOrErr, OutputFilename,
+                             HasValidDiscardPrefix, CanonicalDiscardPrefix,
+                             OverflowOptValue, Dwarf64StrOffsetsValue);
 }

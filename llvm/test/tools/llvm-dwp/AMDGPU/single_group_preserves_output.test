@@ -1,6 +1,6 @@
 ## A single device-only group keeps the exact -o path.
 
-# RUN: yaml2obj %p/Inputs/gfx1031.yaml -o %t.gfx1031.dwo
+# RUN: yaml2obj %p/Inputs/gfx1031.dwo.yaml -o %t.gfx1031.dwo
 # RUN: llvm-dwp %t.gfx1031.dwo -o %t.dwp
 # RUN: llvm-dwp --split-by-arch %t.gfx1031.dwo -o %t.split.dwp
 

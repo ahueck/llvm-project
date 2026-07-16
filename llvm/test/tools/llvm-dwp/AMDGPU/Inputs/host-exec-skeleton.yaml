@@ -1,0 +1,32 @@
+## Host executable skeleton CU that references host.dwo.
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS64
+  Data:    ELFDATA2LSB
+  Type:    ET_EXEC
+  Machine: EM_X86_64
+  OSABI:   ELFOSABI_GNU
+DWARF:
+  debug_str:
+    - "."
+    - "host.dwo"
+  debug_abbrev:
+    - Table:
+        - Code:     1
+          Tag:      DW_TAG_compile_unit
+          Children: DW_CHILDREN_no
+          Attributes:
+            - Attribute: DW_AT_comp_dir
+              Form:      DW_FORM_strp
+            - Attribute: DW_AT_GNU_dwo_name
+              Form:      DW_FORM_strp
+  debug_info:
+    - Version:    5
+      UnitType:   DW_UT_compile
+      AbbrOffset: 0
+      Entries:
+        - AbbrCode: 1
+          Values:
+            - Value: 0
+            - Value: 2
+...

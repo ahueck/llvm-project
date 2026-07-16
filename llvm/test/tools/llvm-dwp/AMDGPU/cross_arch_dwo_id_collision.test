@@ -1,7 +1,7 @@
 ## Same DWO ID across different GPU arches must not collide after grouping.
 
-# RUN: yaml2obj %p/Inputs/gfx1031.yaml -o %t.gfx1031.dwo
-# RUN: yaml2obj %p/Inputs/gfx90a.yaml -o %t.gfx90a.dwo
+# RUN: yaml2obj %p/Inputs/gfx1031.dwo.yaml -o %t.gfx1031.dwo
+# RUN: yaml2obj %p/Inputs/gfx90a.dwo.yaml -o %t.gfx90a.dwo
 
 ## Each arch gets its own output.
 # RUN: llvm-dwp --split-by-arch %t.gfx1031.dwo %t.gfx90a.dwo -o %t.dwp

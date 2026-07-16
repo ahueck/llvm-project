@@ -1,6 +1,6 @@
 ## AMDGPU ELF identity fields are preserved in the output header.
 
-# RUN: yaml2obj %p/Inputs/gfx1031.yaml -o %t.gfx1031.dwo
+# RUN: yaml2obj %p/Inputs/gfx1031.dwo.yaml -o %t.gfx1031.dwo
 # RUN: llvm-dwp %t.gfx1031.dwo -o %t.dwp
 # RUN: llvm-readobj --file-headers %t.dwp | FileCheck %s
 

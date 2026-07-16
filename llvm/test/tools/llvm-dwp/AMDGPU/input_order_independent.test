@@ -1,7 +1,7 @@
 ## Input order must not affect host/default and device output paths.
 
-# RUN: yaml2obj %p/Inputs/host.yaml -o %t.host.dwo
-# RUN: yaml2obj %p/Inputs/gfx1031.yaml -o %t.gfx1031.dwo
+# RUN: yaml2obj %p/Inputs/host.dwo.yaml -o %t.host.dwo
+# RUN: yaml2obj %p/Inputs/gfx1031.dwo.yaml -o %t.gfx1031.dwo
 
 # RUN: llvm-dwp --split-by-arch %t.host.dwo %t.gfx1031.dwo -o %t.host-first.dwp
 # RUN: llvm-readobj --file-headers %t.host-first.dwp | FileCheck %s --check-prefix=HOST

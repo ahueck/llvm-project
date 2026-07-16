@@ -1,6 +1,5 @@
-## AMDGPU gfx90a split-DWARF .dwo input. DWO ID = 0x00ffeeddccbbaa99,
-## intentionally identical to gfx1031.yaml so a merged single-index build
-## would collide, but a per-arch split must not.
+## Second AMDGPU gfx1031 split-DWARF .dwo input. DWO ID =
+## 0x1020304050607080.
 --- !ELF
 FileHeader:
   Class:      ELFCLASS64
@@ -9,12 +8,12 @@ FileHeader:
   Machine:    EM_AMDGPU
   OSABI:      ELFOSABI_AMDGPU_HSA
   ABIVersion: 0x3
-  Flags:      [ EF_AMDGPU_MACH_AMDGCN_GFX90A ]
+  Flags:      [ EF_AMDGPU_MACH_AMDGCN_GFX1031 ]
 Sections:
   - Name:    .debug_info.dwo
     Type:    SHT_PROGBITS
     Flags:   [ SHF_EXCLUDE ]
-    Content: '11000000050005080000000099AABBCCDDEEFF0001'
+    Content: '110000000500050800000000807060504030201001'
   - Name:    .debug_abbrev.dwo
     Type:    SHT_PROGBITS
     Flags:   [ SHF_EXCLUDE ]
