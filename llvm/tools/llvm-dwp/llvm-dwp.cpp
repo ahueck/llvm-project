@@ -17,6 +17,7 @@
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Object/Error.h"
 #include "llvm/Object/ObjectFile.h"
+#include "llvm/Object/OffloadBinary.h"
 #include "llvm/Object/OffloadBundle.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/Option.h"
@@ -153,7 +154,7 @@ static void appendObjectDWOsToGroups(const ObjectFile &Obj, CollectionMode Mode,
   Inputs.insert(Inputs.end(), DWOs.begin(), DWOs.end());
 }
 
-namespace fatbin {
+namespace offload {
 
 static Expected<MemoryBufferRef>
 getBundleEntryBuffer(const ObjectFile &HostObj, OffloadBundleFatBin &Bundle,
@@ -187,6 +188,30 @@ getBundleEntryBuffer(const ObjectFile &HostObj, OffloadBundleFatBin &Bundle,
   return MemoryBufferRef(Slice, Entry.ID);
 }
 
+static Error appendObjectBufferDWOsToGroups(MemoryBufferRef Buffer,
+                                            StringRef HostFilename,
+                                            DWPOutputGroups &Groups) {
+  Expected<std::unique_ptr<ObjectFile>> Obj =
+      ObjectFile::createObjectFile(Buffer);
+  if (!Obj) {
+    bool InvalidFileType = false;
+    Error Remaining = handleErrors(
+        Obj.takeError(), [&](std::unique_ptr<ECError> EC) -> Error {
+          if (EC->convertToErrorCode() == object_error::invalid_file_type) {
+            InvalidFileType = true;
+            return Error::success();
+          }
+          return Error(std::move(EC));
+        });
+    if (InvalidFileType)
+      return Error::success();
+    return createFileError(HostFilename, std::move(Remaining));
+  }
+
+  appendObjectDWOsToGroups(**Obj, CollectionMode::ByArch, Groups);
+  return Error::success();
+}
+
 static Error addFatbinDWOsToGroups(const ObjectFile &HostObj,
                                    StringRef HostFilename,
                                    DWPOutputGroups &Groups) {
@@ -204,31 +229,40 @@ static Error addFatbinDWOsToGroups(const ObjectFile &HostObj,
       if (!EntryBuffer)
         return createFileError(HostFilename, EntryBuffer.takeError());
 
-      Expected<std::unique_ptr<ObjectFile>> EntryObj =
-          ObjectFile::createObjectFile(*EntryBuffer);
-      if (!EntryObj) {
-        bool InvalidFileType = false;
-        Error Remaining = handleErrors(
-            EntryObj.takeError(), [&](std::unique_ptr<ECError> EC) -> Error {
-              if (EC->convertToErrorCode() == object_error::invalid_file_type) {
-                InvalidFileType = true;
-                return Error::success();
-              }
-              return Error(std::move(EC));
-            });
-        if (InvalidFileType)
-          continue;
-        return createFileError(HostFilename, std::move(Remaining));
-      }
-
-      appendObjectDWOsToGroups(**EntryObj, CollectionMode::ByArch, Groups);
+      if (Error Err =
+              appendObjectBufferDWOsToGroups(*EntryBuffer, HostFilename, Groups))
+        return Err;
     }
   }
 
   return Error::success();
 }
 
-} // namespace fatbin
+static Error addOffloadBinaryDWOsToGroups(const ObjectFile &HostObj,
+                                          StringRef HostFilename,
+                                          DWPOutputGroups &Groups) {
+  SmallVector<OffloadFile, 4> Files;
+  Expected<MemoryBufferRef> HostBuffer = HostObj.getMemoryBufferRef();
+  if (!HostBuffer)
+    return createFileError(HostFilename, HostBuffer.takeError());
+  if (Error Err = extractOffloadBinaries(*HostBuffer, Files))
+    return createFileError(HostFilename, std::move(Err));
+
+  for (OffloadFile &File : Files) {
+    StringRef Image = File.getBinary()->getImage();
+    if (Image.empty())
+      continue;
+
+    MemoryBufferRef EntryBuffer(Image, HostFilename);
+    if (Error Err =
+            appendObjectBufferDWOsToGroups(EntryBuffer, HostFilename, Groups))
+      return Err;
+  }
+
+  return Error::success();
+}
+
+} // namespace offload
 
 static Expected<DWPOutputGroups>
 collectInputGroups(ArrayRef<std::string> DWOFilenames,
@@ -253,10 +287,14 @@ collectInputGroups(ArrayRef<std::string> DWOFilenames,
 
     appendObjectDWOsToGroups(*Obj->getBinary(), Mode, Groups);
 
-    if (Mode == CollectionMode::ByArch)
-      if (Error Err = fatbin::addFatbinDWOsToGroups(*Obj->getBinary(),
-                                                    ExecFilename, Groups))
+    if (Mode == CollectionMode::ByArch) {
+      if (Error Err = offload::addFatbinDWOsToGroups(*Obj->getBinary(),
+                                                     ExecFilename, Groups))
         return std::move(Err);
+      if (Error Err = offload::addOffloadBinaryDWOsToGroups(
+              *Obj->getBinary(), ExecFilename, Groups))
+        return std::move(Err);
+    }
   }
   return Groups;
 }

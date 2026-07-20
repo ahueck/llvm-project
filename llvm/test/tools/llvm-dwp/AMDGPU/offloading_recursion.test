@@ -1,0 +1,46 @@
+## Recurse into .llvm.offloading OffloadBinary containers, 
+## cf. .hip_fatbin. Two entries are used.
+
+# RUN: rm -rf %t
+# RUN: mkdir %t
+# RUN: yaml2obj %p/Inputs/host.dwo.yaml -o %t/host.dwo
+# RUN: yaml2obj %p/Inputs/gfx1031.dwo.yaml -o %t/gfx1031.dwo
+# RUN: yaml2obj %p/Inputs/gfx90a.dwo.yaml -o %t/gfx90a.dwo
+# RUN: yaml2obj %p/Inputs/host-exec-skeleton.yaml -o %t/host.exe
+# RUN: yaml2obj %p/Inputs/gfx1031-code-object-skeleton.yaml -o %t/gfx1031.co
+# RUN: yaml2obj %p/Inputs/gfx90a-code-object-skeleton.yaml -o %t/gfx90a.co
+# RUN: llvm-offload-binary -o %t/offload.bin \
+# RUN:   --image=file=%t/gfx90a.co,triple=amdgcn-amd-amdhsa,arch=gfx90a,kind=openmp \
+# RUN:   --image=file=%t/gfx1031.co,triple=amdgcn-amd-amdhsa,arch=gfx1031,kind=openmp
+# RUN: llvm-mc -triple=x86_64-unknown-linux-gnu -filetype=obj -I %t \
+# RUN:   %p/Inputs/make-offload-binary.s -o %t/embed.o
+# RUN: llvm-objcopy --dump-section=.llvm.offloading=%t/offloading %t/embed.o
+# RUN: llvm-objcopy --add-section=.llvm.offloading=%t/offloading \
+# RUN:   --set-section-type=.llvm.offloading=0x6fff4c0b %t/host.exe %t/host.fat
+
+# RUN: cd %t && llvm-dwp --split-by-arch -e host.fat -o out.dwp
+# RUN: llvm-readobj --file-headers %t/out.dwp | FileCheck %s --check-prefix=HOST
+# RUN: llvm-readobj --file-headers %t/out.gfx1031.dwp | FileCheck %s --check-prefix=GFX1031
+# RUN: llvm-readobj --file-headers %t/out.gfx90a.dwp | FileCheck %s --check-prefix=GFX90A
+# RUN: llvm-dwarfdump -debug-cu-index %t/out.dwp | FileCheck %s --check-prefix=HOST-CU
+# RUN: llvm-dwarfdump -debug-cu-index %t/out.gfx1031.dwp | FileCheck %s --check-prefix=GPU-CU
+# RUN: llvm-dwarfdump -debug-cu-index %t/out.gfx90a.dwp | FileCheck %s --check-prefix=GPU-CU
+
+# RUN: cd %t && llvm-dwp -e host.fat -o legacy.dwp
+# RUN: llvm-readobj --file-headers %t/legacy.dwp | FileCheck %s --check-prefix=HOST
+# RUN: llvm-dwarfdump -debug-cu-index %t/legacy.dwp | FileCheck %s --check-prefix=HOST-CU
+# RUN: not llvm-readobj --file-headers %t/legacy.gfx1031.dwp 2>&1
+# RUN: not llvm-readobj --file-headers %t/legacy.gfx90a.dwp 2>&1
+
+# HOST: Machine: EM_X86_64
+# HOST-CU: 0x0011223344556677
+
+# GFX1031:      Machine: EM_AMDGPU
+# GFX1031:      Flags [
+# GFX1031-NEXT:   EF_AMDGPU_MACH_AMDGCN_GFX1031
+
+# GFX90A:      Machine: EM_AMDGPU
+# GFX90A:      Flags [
+# GFX90A-NEXT:   EF_AMDGPU_MACH_AMDGCN_GFX90A
+
+# GPU-CU: 0x00ffeeddccbbaa99
