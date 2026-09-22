@@ -239,6 +239,11 @@ bool SILateBranchLowering::run(MachineFunction &MF) {
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : llvm::make_early_inc_range(MBB)) {
       switch (MI.getOpcode()) {
+      case AMDGPU::SI_DEBUGGING_ENABLED_BRANCH:
+        MI.setDesc(TII->get(AMDGPU::S_CBRANCH_CDBGSYS_OR_USER));
+        MadeChange = true;
+        break;
+
       case AMDGPU::S_BRANCH:
         // Optimize out branches to the next block.
         // This only occurs in -O0 when BranchFolding is not executed.

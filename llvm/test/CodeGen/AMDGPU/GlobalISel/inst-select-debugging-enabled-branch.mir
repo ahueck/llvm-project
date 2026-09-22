@@ -1,5 +1,6 @@
-# RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1310 -run-pass=instruction-select -verify-machineinstrs %s -o - | FileCheck %s
-# RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1310 -O0 -run-pass=instruction-select -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1310 -run-pass=instruction-select -verify-machineinstrs %s -o - | FileCheck %s --check-prefixes=CHECK,OBSERVATION
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1310 -O0 -run-pass=instruction-select -verify-machineinstrs %s -o - | FileCheck %s --check-prefixes=CHECK,OBSERVATION
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1310 -run-pass=instruction-select,si-optimize-exec-masking-pre-ra -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=OBSERVATION
 
 ---
 name: negated_fallthrough
@@ -10,7 +11,7 @@ body: |
   ; CHECK: bb.0:
   ; CHECK-NEXT: successors: %bb.1(0x40000000), %bb.2(0x40000000)
   ; CHECK-NOT: S_GETREG_B32
-  ; CHECK: nomerge S_CBRANCH_CDBGSYS_OR_USER %bb.1
+  ; CHECK: nomerge SI_DEBUGGING_ENABLED_BRANCH %bb.1
   ; CHECK-NEXT: S_BRANCH %bb.2
   ; CHECK-NOT: S_GETREG_B32
   bb.0:
@@ -33,7 +34,7 @@ body: |
   ; CHECK-LABEL: name: negated_explicit_branch
   ; CHECK: bb.0:
   ; CHECK-NOT: S_GETREG_B32
-  ; CHECK: nomerge S_CBRANCH_CDBGSYS_OR_USER %bb.2
+  ; CHECK: nomerge SI_DEBUGGING_ENABLED_BRANCH %bb.2
   ; CHECK-NEXT: S_BRANCH %bb.1
   ; CHECK-NOT: S_GETREG_B32
   bb.0:
@@ -139,5 +140,26 @@ body: |
   bb.1:
     S_ENDPGM 0
   bb.2:
+    S_ENDPGM 0
+...
+
+---
+name: same_destination_before_endpgm
+legalized: true
+regBankSelected: true
+body: |
+  ; OBSERVATION-LABEL: name: same_destination_before_endpgm
+  ; OBSERVATION: bb.0:
+  ; OBSERVATION: nomerge SI_DEBUGGING_ENABLED_BRANCH %bb.1
+  ; OBSERVATION-NEXT: S_BRANCH %bb.1
+  bb.0:
+    successors: %bb.1
+    %0:sgpr(s32) = G_INTRINSIC_W_SIDE_EFFECTS intrinsic(@llvm.amdgcn.s.getreg), 3330
+    %1:sgpr(s32) = G_CONSTANT i32 0
+    %2:sgpr(s32) = G_ICMP intpred(ne), %0, %1
+    G_BRCOND %2, %bb.1
+    G_BR %bb.1
+
+  bb.1:
     S_ENDPGM 0
 ...

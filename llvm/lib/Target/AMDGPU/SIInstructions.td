@@ -654,6 +654,18 @@ def SI_EARLY_TERMINATE_SCC0 : SPseudoInstSI <(outs), (ins)> {
   let Uses = [EXEC,SCC];
 }
 
+// Keep debugging-state observations opaque to CFG optimizations until
+// SILateBranchLowering expands them to S_CBRANCH_CDBGSYS_OR_USER.
+def SI_DEBUGGING_ENABLED_BRANCH : SPseudoInstSI <
+  (outs), (ins brtarget:$target)> {
+  let isBranch = 1;
+  let isTerminator = 1;
+  let hasSideEffects = 1;
+  let Size = 4;
+  let FixedSize = 1;
+  let SchedRW = [WriteBranch];
+}
+
 let Uses = [EXEC] in {
 
 multiclass PseudoInstKill <dag ins> {

@@ -1,9 +1,9 @@
-; RUN: llc -verify-machineinstrs -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1150 -O2 < %s | FileCheck %s --check-prefix=GCN
-; RUN: llc -verify-machineinstrs -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1150 -O2 -global-isel -global-isel-abort=1 < %s | FileCheck %s --check-prefix=GCN
-; RUN: llc -verify-machineinstrs -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1200 -O2 < %s | FileCheck %s --check-prefix=GCN
-; RUN: llc -verify-machineinstrs -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1200 -O2 -global-isel -global-isel-abort=1 < %s | FileCheck %s --check-prefix=GCN
-; RUN: llc -verify-machineinstrs -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1310 -O2 < %s | FileCheck %s --check-prefix=GCN
-; RUN: llc -verify-machineinstrs -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1310 -O2 -global-isel -global-isel-abort=1 < %s | FileCheck %s --check-prefix=GCN
+; RUN: llc -verify-machineinstrs -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1150 -O2 < %s | FileCheck %s --check-prefixes=GCN,GCN-O2
+; RUN: llc -verify-machineinstrs -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1150 -O2 -global-isel -global-isel-abort=1 < %s | FileCheck %s --check-prefixes=GCN,GCN-O2
+; RUN: llc -verify-machineinstrs -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1200 -O2 < %s | FileCheck %s --check-prefixes=GCN,GCN-O2
+; RUN: llc -verify-machineinstrs -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1200 -O2 -global-isel -global-isel-abort=1 < %s | FileCheck %s --check-prefixes=GCN,GCN-O2
+; RUN: llc -verify-machineinstrs -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1310 -O2 < %s | FileCheck %s --check-prefixes=GCN,GCN-O2
+; RUN: llc -verify-machineinstrs -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1310 -O2 -global-isel -global-isel-abort=1 < %s | FileCheck %s --check-prefixes=GCN,GCN-O2
 ; At -O0 the DAG combiner never rewrites the inverted condition into a setcc, so
 ; these runs cover the bare-xor form of the query reaching branch lowering.
 ; RUN: llc -verify-machineinstrs -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1310 -O0 < %s | FileCheck %s --check-prefix=GCN
@@ -18,6 +18,7 @@
 declare noundef i1 @llvm.is.debugging.enabled()
 declare i1 @llvm.expect.i1(i1, i1 immarg)
 declare void @llvm.debugtrap()
+declare void @llvm.amdgcn.s.sleep(i32 immarg)
 declare i32 @llvm.amdgcn.ballot.i32(i1)
 declare i32 @llvm.amdgcn.workgroup.id.x()
 declare i32 @llvm.amdgcn.workitem.id.x()
@@ -127,7 +128,7 @@ normal:
 ; MIR-LABEL: name: expected_debug_break
 ; MIR: bb.{{[0-9]+}}.entry:
 ; MIR: successors: %bb.[[MIR_DEBUG:[0-9]+]](0x00106035), %bb.[[MIR_NORMAL:[0-9]+]](0x7fef9fcb)
-; MIR: nomerge S_CBRANCH_CDBGSYS_OR_USER %bb.[[MIR_DEBUG]]
+; MIR: nomerge SI_DEBUGGING_ENABLED_BRANCH %bb.[[MIR_DEBUG]]
 ; MIR-NEXT: S_BRANCH %bb.[[MIR_NORMAL]]
 
 define amdgpu_kernel void @arithmetic_between(i32 %x,
@@ -239,6 +240,61 @@ exit:
 ; GCN: [[UNIFORM_DEBUG]]:
 ; GCN-NEXT: s_trap 3
 ; GCN: [[UNIFORM_SKIP]]:
+
+; These identical branch conditions are distinct observations. Branch folding
+; must not remove the first query in favor of the second.
+define amdgpu_kernel void @consecutive_branch_queries() {
+entry:
+  %first = call i1 @llvm.is.debugging.enabled()
+  br i1 %first, label %debug, label %second_query
+
+second_query:
+  %second = call i1 @llvm.is.debugging.enabled()
+  br i1 %second, label %debug, label %exit
+
+exit:
+  ret void
+
+debug:
+  call void @llvm.debugtrap()
+  ret void
+}
+
+; GCN-LABEL: consecutive_branch_queries:
+; GCN-NOT: s_getreg_b32
+; GCN: s_cbranch_cdbgsys_or_user [[CONSECUTIVE_DEBUG:.LBB[0-9_]+]]
+; GCN: s_cbranch_cdbgsys_or_user [[CONSECUTIVE_DEBUG]]
+; GCN-NOT: s_cbranch_cdbgsys_or_user
+; GCN: [[CONSECUTIVE_DEBUG]]:
+; GCN-NEXT: s_trap 3
+
+; Merging identical successors must retain the observation.
+define amdgpu_kernel void @converging_destinations() {
+entry:
+  %enabled = call i1 @llvm.is.debugging.enabled()
+  br i1 %enabled, label %debug, label %normal
+
+debug:
+  call void @llvm.amdgcn.s.sleep(i32 1)
+  ret void
+
+normal:
+  call void @llvm.amdgcn.s.sleep(i32 1)
+  ret void
+}
+
+; GCN-LABEL: converging_destinations:
+; GCN-O2-NOT: s_sleep
+; GCN-NOT: s_getreg_b32
+; GCN: s_cbranch_cdbgsys_or_user [[CONVERGED:.LBB[0-9_]+]]
+; GCN-NOT: s_cbranch_cdbgsys_or_user
+; GCN-O2-NOT: s_sleep
+; GCN: [[CONVERGED]]:
+; GCN: s_sleep 1
+; GCN-O2-NOT: s_sleep
+; GCN: s_endpgm
+; GCN-O2-NOT: s_sleep
+; GCN-O2: .Lfunc_end
 
 !llvm.dbg.cu = !{!0}
 !llvm.module.flags = !{!2, !3}

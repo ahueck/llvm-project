@@ -1,0 +1,41 @@
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1150 -run-pass=si-late-branch-lowering -verify-machineinstrs %s -o - | FileCheck %s --implicit-check-not=SI_DEBUGGING_ENABLED_BRANCH
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1150 -passes=si-late-branch-lowering -verify-machineinstrs %s -o - | FileCheck %s --implicit-check-not=SI_DEBUGGING_ENABLED_BRANCH
+
+# Expand in place, retaining successors and branch targets even when both
+# outcomes lead to the same block.
+
+---
+name: distinct_destinations
+tracksRegLiveness: true
+body: |
+  ; CHECK-LABEL: name: distinct_destinations
+  ; CHECK: bb.0:
+  ; CHECK: S_CBRANCH_CDBGSYS_OR_USER %bb.1{{$}}
+  ; CHECK-NEXT: S_BRANCH %bb.2
+  bb.0:
+    successors: %bb.1, %bb.2
+    SI_DEBUGGING_ENABLED_BRANCH %bb.1
+    S_BRANCH %bb.2
+
+  bb.1:
+    S_ENDPGM 0
+
+  bb.2:
+    S_ENDPGM 0
+...
+
+---
+name: shared_fallthrough
+tracksRegLiveness: true
+body: |
+  ; CHECK-LABEL: name: shared_fallthrough
+  ; CHECK: bb.0:
+  ; CHECK: S_CBRANCH_CDBGSYS_OR_USER %bb.1{{$}}
+  bb.0:
+    successors: %bb.1
+    SI_DEBUGGING_ENABLED_BRANCH %bb.1
+    S_BRANCH %bb.1
+
+  bb.1:
+    S_ENDPGM 0
+...
