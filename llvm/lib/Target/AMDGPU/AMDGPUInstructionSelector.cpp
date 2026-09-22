@@ -3214,7 +3214,7 @@ bool AMDGPUInstructionSelector::selectDebuggingEnabledBranch(
   MachineBasicBlock *TrueTarget = I.getOperand(1).getMBB();
   bool Negated = Cmp->getCond() == CmpInst::ICMP_EQ;
   const DebugLoc &DL = I.getDebugLoc();
-  auto Br = BuildMI(*BB, &I, DL, TII.get(AMDGPU::S_CBRANCH_CDBGSYS_OR_USER))
+  auto Br = BuildMI(*BB, &I, DL, TII.get(AMDGPU::SI_DEBUGGING_ENABLED_BRANCH))
                 .addMBB(Negated ? FalseTarget : TrueTarget);
   Br->setFlag(MachineInstr::NoMerge);
   if (Negated) {

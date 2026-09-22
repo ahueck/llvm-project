@@ -8709,7 +8709,7 @@ SDValue SITargetLowering::LowerIS_DEBUGGING_ENABLED(SDValue Op,
 }
 
 /// Fuses a debugging-state query from \p BRCOND into a single
-/// S_CBRANCH_CDBGSYS_OR_USER, which branches when debugging is enabled.
+/// SI_DEBUGGING_ENABLED_BRANCH, which branches when debugging is enabled.
 /// Returns a null SDValue if the condition does not test such a query, or if
 /// something observable happens between the query and the branch.
 static SDValue lowerDebuggingEnabledBRCOND(SDValue BRCOND, SelectionDAG &DAG) {
@@ -8758,11 +8758,11 @@ static SDValue lowerDebuggingEnabledBRCOND(SDValue BRCOND, SelectionDAG &DAG) {
 
   DAG.ReplaceAllUsesOfValueWith(Cond.getValue(1), Cond.getOperand(0));
 
-  MachineSDNode *CDBGBranch =
-      DAG.getMachineNode(AMDGPU::S_CBRANCH_CDBGSYS_OR_USER, DL, MVT::Other,
+  MachineSDNode *Branch =
+      DAG.getMachineNode(AMDGPU::SI_DEBUGGING_ENABLED_BRANCH, DL, MVT::Other,
                          Target, BRCOND.getOperand(0));
-  DAG.addNoMergeSiteInfo(CDBGBranch, true);
-  return SDValue(CDBGBranch, 0);
+  DAG.addNoMergeSiteInfo(Branch, true);
+  return SDValue(Branch, 0);
 }
 
 /// This transforms the control flow intrinsics to get the branch destination as

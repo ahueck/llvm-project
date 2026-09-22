@@ -8322,7 +8322,7 @@ bool AMDGPULegalizerInfo::legalizeSetFPEnv(MachineInstr &MI,
 bool AMDGPULegalizerInfo::legalizeIsDebuggingEnabled(
     MachineInstr &MI, MachineIRBuilder &B) const {
   // The instruction selector folds single-use branch conditions back into
-  // S_CBRANCH_CDBGSYS_OR_USER when there are no intervening observations.
+  // SI_DEBUGGING_ENABLED_BRANCH when there are no intervening observations.
   auto Bits = B.buildIntrinsic(Intrinsic::amdgcn_s_getreg, {LLT::scalar(32)})
                   .addImm(AMDGPU::Hwreg::getDebuggingEnabledHwregImm(ST));
   Bits->setFlag(MachineInstr::NoMerge);
