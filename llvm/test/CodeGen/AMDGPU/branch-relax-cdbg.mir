@@ -1,0 +1,125 @@
+# RUN: llc -mtriple=amdgcn -mcpu=gfx900 -amdgpu-s-branch-bits=4 -run-pass=branch-relaxation -verify-machineinstrs %s -o - | FileCheck %s
+
+---
+name: cdbgsys_fallthrough
+tracksRegLiveness: true
+body: |
+  ; CHECK-LABEL: name: cdbgsys_fallthrough
+  ; CHECK: S_CBRANCH_CDBGSYS %bb.[[TRAMP:[0-9]+]]{{$}}
+  ; CHECK-NEXT: S_BRANCH %bb.1{{$}}
+  ; CHECK: bb.[[TRAMP]]:
+  bb.0:
+    successors: %bb.1, %bb.2
+
+    S_CBRANCH_CDBGSYS %bb.2
+
+  bb.1:
+    successors: %bb.2
+
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+
+  bb.2:
+    S_ENDPGM 0
+...
+
+---
+name: cdbguser_fallthrough
+tracksRegLiveness: true
+body: |
+  ; CHECK-LABEL: name: cdbguser_fallthrough
+  ; CHECK: S_CBRANCH_CDBGUSER %bb.[[TRAMP:[0-9]+]]{{$}}
+  ; CHECK-NEXT: S_BRANCH %bb.1{{$}}
+  ; CHECK: bb.[[TRAMP]]:
+  bb.0:
+    successors: %bb.1, %bb.2
+
+    S_CBRANCH_CDBGUSER %bb.2
+
+  bb.1:
+    successors: %bb.2
+
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+
+  bb.2:
+    S_ENDPGM 0
+...
+
+---
+name: cdbgsys_or_user_fallthrough
+tracksRegLiveness: true
+body: |
+  ; CHECK-LABEL: name: cdbgsys_or_user_fallthrough
+  ; CHECK: S_CBRANCH_CDBGSYS_OR_USER %bb.[[TRAMP:[0-9]+]]{{$}}
+  ; CHECK-NEXT: S_BRANCH %bb.1{{$}}
+  ; CHECK: bb.[[TRAMP]]:
+  bb.0:
+    successors: %bb.1, %bb.2
+
+    S_CBRANCH_CDBGSYS_OR_USER %bb.2
+
+  bb.1:
+    successors: %bb.2
+
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+
+  bb.2:
+    S_ENDPGM 0
+...
+
+---
+name: cdbgsys_and_user_fallthrough
+tracksRegLiveness: true
+body: |
+  ; CHECK-LABEL: name: cdbgsys_and_user_fallthrough
+  ; CHECK: S_CBRANCH_CDBGSYS_AND_USER %bb.[[TRAMP:[0-9]+]]{{$}}
+  ; CHECK-NEXT: S_BRANCH %bb.1{{$}}
+  ; CHECK: bb.[[TRAMP]]:
+  bb.0:
+    successors: %bb.1, %bb.2
+
+    S_CBRANCH_CDBGSYS_AND_USER %bb.2
+
+  bb.1:
+    successors: %bb.2
+
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+    S_NOP 0
+
+  bb.2:
+    S_ENDPGM 0
+...

@@ -3272,6 +3272,14 @@ unsigned SIInstrInfo::getBranchOpcode(SIInstrInfo::BranchPredicate Cond) {
     return AMDGPU::S_CBRANCH_EXECNZ;
   case SIInstrInfo::EXECZ:
     return AMDGPU::S_CBRANCH_EXECZ;
+  case SIInstrInfo::CDBGSYS:
+    return AMDGPU::S_CBRANCH_CDBGSYS;
+  case SIInstrInfo::CDBGUSER:
+    return AMDGPU::S_CBRANCH_CDBGUSER;
+  case SIInstrInfo::CDBGSYS_OR_USER:
+    return AMDGPU::S_CBRANCH_CDBGSYS_OR_USER;
+  case SIInstrInfo::CDBGSYS_AND_USER:
+    return AMDGPU::S_CBRANCH_CDBGSYS_AND_USER;
   default:
     llvm_unreachable("invalid branch predicate");
   }
@@ -3291,6 +3299,14 @@ SIInstrInfo::BranchPredicate SIInstrInfo::getBranchPredicate(unsigned Opcode) {
     return EXECNZ;
   case AMDGPU::S_CBRANCH_EXECZ:
     return EXECZ;
+  case AMDGPU::S_CBRANCH_CDBGSYS:
+    return CDBGSYS;
+  case AMDGPU::S_CBRANCH_CDBGUSER:
+    return CDBGUSER;
+  case AMDGPU::S_CBRANCH_CDBGSYS_OR_USER:
+    return CDBGSYS_OR_USER;
+  case AMDGPU::S_CBRANCH_CDBGSYS_AND_USER:
+    return CDBGSYS_AND_USER;
   default:
     return INVALID_BR;
   }
@@ -3314,7 +3330,8 @@ bool SIInstrInfo::analyzeBranchImpl(MachineBasicBlock &MBB,
 
   MachineBasicBlock *CondBB = I->getOperand(0).getMBB();
   Cond.push_back(MachineOperand::CreateImm(Pred));
-  Cond.push_back(I->getOperand(1)); // Save the branch register.
+  if (I->getNumOperands() > 1)
+    Cond.push_back(I->getOperand(1)); // Save the branch register.
 
   ++I;
 
@@ -3431,7 +3448,8 @@ unsigned SIInstrInfo::insertBranch(MachineBasicBlock &MBB,
       .addMBB(TBB);
 
     // Copy the flags onto the implicit condition register operand.
-    preserveCondRegFlags(CondBr->getOperand(1), Cond[1]);
+    if (Cond.size() > 1)
+      preserveCondRegFlags(CondBr->getOperand(1), Cond[1]);
     fixImplicitOperands(*CondBr);
 
     if (BytesAdded)
@@ -3448,9 +3466,8 @@ unsigned SIInstrInfo::insertBranch(MachineBasicBlock &MBB,
   BuildMI(&MBB, DL, get(AMDGPU::S_BRANCH))
     .addMBB(FBB);
 
-  MachineOperand &CondReg = CondBr->getOperand(1);
-  CondReg.setIsUndef(Cond[1].isUndef());
-  CondReg.setIsKill(Cond[1].isKill());
+  if (Cond.size() > 1)
+    preserveCondRegFlags(CondBr->getOperand(1), Cond[1]);
 
   if (BytesAdded)
     *BytesAdded = ST.hasOffset3fBug() ? 16 : 8;

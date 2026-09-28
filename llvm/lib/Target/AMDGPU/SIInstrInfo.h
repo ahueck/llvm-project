@@ -124,7 +124,11 @@ private:
     VCCNZ = 2,
     VCCZ = -2,
     EXECNZ = -3,
-    EXECZ = 3
+    EXECZ = 3,
+    CDBGSYS = 4,
+    CDBGUSER = 5,
+    CDBGSYS_OR_USER = 6,
+    CDBGSYS_AND_USER = 7,
   };
 
   using SetVectorType = SmallSetVector<MachineInstr *, 32>;
