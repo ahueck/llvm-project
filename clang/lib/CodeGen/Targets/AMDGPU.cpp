@@ -10,10 +10,14 @@
 #include "TargetInfo.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/CodeGenUtils/TargetUtils.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/MemoryModelRelaxationAnnotations.h"
 #include "llvm/Support/AMDGPUAddrSpace.h"
+#include "llvm/Support/Debug.h"
+
+#define DEBUG_TYPE "amdgpu-abi-coverage"
 
 using namespace clang;
 using namespace clang::CodeGen;
@@ -24,11 +28,58 @@ using namespace clang::CodeGen;
 
 namespace {
 
+/// Determines whether the IR type of an aggregate passed or returned directly
+/// transports every byte that may hold user data.
+class AMDGPUDataCoverage {
+public:
+  struct Info {
+    bool CoversAllData;
+    bool HasIntUnsafePtr;
+    uint64_t NumLanes; // 32-bit lanes needed to carry all bytes.
+  };
+
+  explicit AMDGPUDataCoverage(CodeGenTypes &CGT) : CGT(CGT) {}
+
+  Info analyze(QualType Ty) const;
+
+private:
+  static void markBits(llvm::BitVector &Data, uint64_t BeginInBits,
+                       uint64_t SizeInBits) {
+    if (!SizeInBits)
+      return;
+    uint64_t End = llvm::divideCeil(BeginInBits + SizeInBits, 8);
+    assert(End <= Data.size() && "range exceeds the outermost type");
+    Data.set(BeginInBits / 8, End);
+  }
+
+  /// Marks the bytes of \p Ty, placed at \p OffsetInBits, that may hold user
+  /// data. Union members are all marked. Sets \p HasIntUnsafePtr if \p Ty
+  /// contains a pointer that must not be transported as an integer.
+  void markDataBytes(QualType Ty, uint64_t OffsetInBits, llvm::BitVector &Data,
+                     bool &HasIntUnsafePtr) const;
+
+  /// Marks the bytes of \p Ty, placed at \p OffsetInBytes, that are occupied by
+  /// its non-aggregate elements and are therefore transported by a value of
+  /// \p Ty.
+  void markCoveredBytes(llvm::Type *Ty, uint64_t OffsetInBytes,
+                        llvm::BitVector &Covered) const;
+
+  CodeGenTypes &CGT;
+};
+
 class AMDGPUABIInfo final : public DefaultABIInfo {
 private:
   static const unsigned MaxNumRegsForArgsRet = 16;
 
+  AMDGPUDataCoverage Coverage;
+
   uint64_t numRegsForType(QualType Ty) const;
+
+  /// Returns an [N x i32] type covering all bytes described by \p Cov, or null
+  /// if that needs more than \p MaxLanes lanes or the type contains a
+  /// pointer that must not be transported as an integer.
+  llvm::ArrayType *getDataCarrier(const AMDGPUDataCoverage::Info &Cov,
+                                  uint64_t MaxLanes) const;
 
   bool isHomogeneousAggregateBaseType(QualType Ty) const override;
   bool isHomogeneousAggregateSmallEnough(const Type *Base,
@@ -45,8 +96,8 @@ private:
   }
 
 public:
-  explicit AMDGPUABIInfo(CodeGen::CodeGenTypes &CGT) :
-    DefaultABIInfo(CGT) {}
+  explicit AMDGPUABIInfo(CodeGen::CodeGenTypes &CGT)
+      : DefaultABIInfo(CGT), Coverage(CGT) {}
 
   ABIArgInfo classifyReturnType(QualType RetTy) const;
   ABIArgInfo classifyKernelArgumentType(QualType Ty) const;
@@ -113,6 +164,139 @@ uint64_t AMDGPUABIInfo::numRegsForType(QualType Ty) const {
   return (getContext().getTypeSize(Ty) + 31) / 32;
 }
 
+void AMDGPUDataCoverage::markDataBytes(QualType Ty, uint64_t OffsetInBits,
+                                       llvm::BitVector &Data,
+                                       bool &HasIntUnsafePtr) const {
+  ASTContext &Ctx = CGT.getContext();
+
+  if (const ConstantArrayType *AT = Ctx.getAsConstantArrayType(Ty)) {
+    QualType EltTy = AT->getElementType();
+    uint64_t EltSize = Ctx.getTypeSize(EltTy);
+    for (uint64_t I = 0, E = AT->getZExtSize(); I != E; ++I)
+      markDataBytes(EltTy, OffsetInBits + I * EltSize, Data, HasIntUnsafePtr);
+    return;
+  }
+
+  if (const auto *RD = Ty->getAsRecordDecl()) {
+    const ASTRecordLayout &Layout = Ctx.getASTRecordLayout(RD);
+
+    if (const auto *CXXRD = dyn_cast<CXXRecordDecl>(RD)) {
+      assert(!CXXRD->getNumVBases() && "virtual bases are classified indirect");
+      for (const CXXBaseSpecifier &Base : CXXRD->bases()) {
+        const auto *BaseRD = Base.getType()->getAsCXXRecordDecl();
+        markDataBytes(Base.getType(),
+                      OffsetInBits +
+                          Ctx.toBits(Layout.getBaseClassOffset(BaseRD)),
+                      Data, HasIntUnsafePtr);
+      }
+    }
+
+    for (const FieldDecl *Field : RD->fields()) {
+      if (isEmptyField(Ctx, Field, /*AllowArrays=*/true))
+        continue;
+      uint64_t FieldOffset =
+          OffsetInBits + Layout.getFieldOffset(Field->getFieldIndex());
+      if (Field->isBitField())
+        AMDGPUDataCoverage::markBits(Data, FieldOffset,
+                                     Field->getBitWidthValue());
+      else
+        markDataBytes(Field->getType(), FieldOffset, Data, HasIntUnsafePtr);
+    }
+    return;
+  }
+
+  if (const auto *VT = Ty->getAs<VectorType>()) {
+    uint64_t EltSize = VT->isPackedVectorBoolType(Ctx)
+                           ? 1
+                           : Ctx.getTypeSize(VT->getElementType());
+    AMDGPUDataCoverage::markBits(Data, OffsetInBits,
+                                 VT->getNumElements() * EltSize);
+    return;
+  }
+
+  AMDGPUDataCoverage::markBits(Data, OffsetInBits, Ctx.getTypeSize(Ty));
+  if (CGT.getDataLayout().mustNotIntroduceIntToPtr(CGT.ConvertTypeForMem(Ty)))
+    HasIntUnsafePtr = true;
+}
+
+void AMDGPUDataCoverage::markCoveredBytes(llvm::Type *Ty,
+                                          uint64_t OffsetInBytes,
+                                          llvm::BitVector &Covered) const {
+  const llvm::DataLayout &DL = CGT.getDataLayout();
+
+  if (auto *ST = dyn_cast<llvm::StructType>(Ty)) {
+    const llvm::StructLayout *SL = DL.getStructLayout(ST);
+    for (unsigned I = 0, E = ST->getNumElements(); I != E; ++I)
+      markCoveredBytes(ST->getElementType(I),
+                       OffsetInBytes + SL->getElementOffset(I).getFixedValue(),
+                       Covered);
+    return;
+  }
+
+  if (auto *AT = dyn_cast<llvm::ArrayType>(Ty)) {
+    llvm::Type *EltTy = AT->getElementType();
+    uint64_t Stride = DL.getTypeAllocSize(EltTy).getFixedValue();
+    for (uint64_t I = 0, E = AT->getNumElements(); I != E; ++I)
+      markCoveredBytes(EltTy, OffsetInBytes + I * Stride, Covered);
+    return;
+  }
+
+  AMDGPUDataCoverage::markBits(Covered, OffsetInBytes * 8,
+                               DL.getTypeStoreSize(Ty).getFixedValue() * 8);
+}
+
+AMDGPUDataCoverage::Info AMDGPUDataCoverage::analyze(QualType Ty) const {
+  ASTContext &Ctx = CGT.getContext();
+  uint64_t Size = Ctx.getTypeSizeInChars(Ty).getQuantity();
+  llvm::BitVector Data(Size), Covered(Size);
+  bool HasIntUnsafePtr = false;
+  markDataBytes(Ty, 0, Data, HasIntUnsafePtr);
+  llvm::Type *LoweredTy = CGT.ConvertType(Ty);
+  markCoveredBytes(LoweredTy, 0, Covered);
+  Info Result = {!Data.test(Covered), HasIntUnsafePtr,
+                 llvm::divideCeil(Ctx.getTypeSize(Ty), 32)};
+
+  LLVM_DEBUG({
+    auto PrintMask = [](const llvm::BitVector &Mask) {
+      for (unsigned I = 0, E = Mask.size(); I != E; ++I) {
+        if (I && I % 4 == 0)
+          llvm::dbgs() << ' ';
+        llvm::dbgs() << (Mask[I] ? 'x' : '.');
+      }
+    };
+    llvm::BitVector Missing = Data;
+    Missing.reset(Covered);
+    llvm::dbgs() << DEBUG_TYPE << ": '" << Ty.getAsString() << "' (" << Size
+                 << " bytes) as ";
+    LoweredTy->print(llvm::dbgs());
+    llvm::dbgs() << "\n";
+    if (const auto *RD = Ty->getAsRecordDecl())
+      Ctx.DumpRecordLayout(RD, llvm::dbgs());
+    llvm::dbgs() << "  data:    ";
+    PrintMask(Data);
+    llvm::dbgs() << "\n  covered: ";
+    PrintMask(Covered);
+    llvm::dbgs() << "\n  missing: ";
+    PrintMask(Missing);
+    llvm::dbgs() << "\n  covers all data: "
+                 << (Result.CoversAllData ? "yes" : "no")
+                 << ", int-unsafe ptr: "
+                 << (Result.HasIntUnsafePtr ? "yes" : "no")
+                 << ", lanes: " << Result.NumLanes << "\n";
+  });
+
+  return Result;
+}
+
+llvm::ArrayType *
+AMDGPUABIInfo::getDataCarrier(const AMDGPUDataCoverage::Info &Cov,
+                              uint64_t MaxLanes) const {
+  if (Cov.HasIntUnsafePtr || Cov.NumLanes > MaxLanes)
+    return nullptr;
+  return llvm::ArrayType::get(llvm::Type::getInt32Ty(getVMContext()),
+                              Cov.NumLanes);
+}
+
 void AMDGPUABIInfo::computeInfo(CGFunctionInfo &FI) const {
   llvm::CallingConv::ID CC = FI.getCallingConvention();
 
@@ -172,8 +356,14 @@ ABIArgInfo AMDGPUABIInfo::classifyReturnType(QualType RetTy) const {
         return ABIArgInfo::getDirect(llvm::ArrayType::get(I32Ty, 2));
       }
 
-      if (numRegsForType(RetTy) <= MaxNumRegsForArgsRet)
-        return ABIArgInfo::getDirect();
+      if (numRegsForType(RetTy) <= MaxNumRegsForArgsRet) {
+        AMDGPUDataCoverage::Info Cov = Coverage.analyze(RetTy);
+        if (Cov.CoversAllData)
+          return ABIArgInfo::getDirect();
+        if (llvm::ArrayType *Carrier =
+                getDataCarrier(Cov, MaxNumRegsForArgsRet))
+          return ABIArgInfo::getDirect(Carrier);
+      }
     }
   }
 
@@ -270,8 +460,15 @@ ABIArgInfo AMDGPUABIInfo::classifyArgumentType(QualType Ty, bool Variadic,
     if (NumRegsLeft > 0) {
       uint64_t NumRegs = numRegsForType(Ty);
       if (NumRegsLeft >= NumRegs) {
-        NumRegsLeft -= NumRegs;
-        return ABIArgInfo::getDirect();
+        AMDGPUDataCoverage::Info Cov = Coverage.analyze(Ty);
+        if (Cov.CoversAllData) {
+          NumRegsLeft -= NumRegs;
+          return ABIArgInfo::getDirect();
+        }
+        if (llvm::ArrayType *Carrier = getDataCarrier(Cov, NumRegsLeft)) {
+          NumRegsLeft -= Carrier->getNumElements();
+          return ABIArgInfo::getDirect(Carrier);
+        }
       }
     }
 
