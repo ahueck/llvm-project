@@ -1478,6 +1478,12 @@ def ReadSteadyCounter : Builtin {
   let Prototype = "unsigned long long int()";
 }
 
+def IsDebuggingEnabled : Builtin {
+  let Spellings = ["__builtin_is_debugging_enabled"];
+  let Attributes = [NoThrow];
+  let Prototype = "bool()";
+}
+
 def Trap : Builtin {
   let Spellings = ["__builtin_trap"];
   let Attributes = [NoThrow, NoReturn];

@@ -3216,6 +3216,11 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
       return ExprError();
     }
     break;
+  case Builtin::BI__builtin_is_debugging_enabled:
+    if (!Context.getTargetInfo().supportsIsDebuggingEnabled())
+      targetDiag(TheCall->getBeginLoc(), diag::err_builtin_target_unsupported)
+          << SourceRange(TheCall->getBeginLoc(), TheCall->getEndLoc());
+    break;
   case Builtin::BI__builtin___CFStringMakeConstantString:
     // CFStringMakeConstantString is currently not implemented for GOFF (i.e.,
     // on z/OS) and for XCOFF (i.e., on AIX). Emit unsupported

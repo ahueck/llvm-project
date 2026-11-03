@@ -1801,6 +1801,8 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
               return getTargetInfo().supportsCpuInit();
             case Builtin::BI__builtin_cpu_supports:
               return getTargetInfo().supportsCpuSupports();
+            case Builtin::BI__builtin_is_debugging_enabled:
+              return getTargetInfo().supportsIsDebuggingEnabled();
             case Builtin::BI__builtin_operator_new:
             case Builtin::BI__builtin_operator_delete:
               // denotes date of behavior change to support calling arbitrary

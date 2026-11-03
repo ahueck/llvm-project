@@ -327,6 +327,9 @@ documentation](CIR/index.md) for more information regarding ClangIR's status and
 - Clang now allows GNU computed `goto` extension in `constexpr` functions, matching the relaxed
   `constexpr` function body rules introduced in C++23.
 
+- Added `__builtin_is_debugging_enabled`, a runtime query of whether debugging
+  is enabled for the current execution context.
+
 - Added support for the `__builtin_strlcat` and `__builtin_strlcpy` builtins.
 
 - Added `__builtin_sort_pack` to sort a pack of types using the same

@@ -3469,6 +3469,44 @@ counter's true frequency will need to be provided by the user.
 
 Query for this feature with `__has_builtin(__builtin_readsteadycounter)`.
 
+### `__builtin_is_debugging_enabled`
+
+`__builtin_is_debugging_enabled` queries whether debugging is enabled for the
+current execution context.
+
+**Syntax**:
+
+```c++
+bool __builtin_is_debugging_enabled()
+```
+
+**Example of Use**:
+
+```c++
+bool debugging() {
+#if __has_builtin(__builtin_is_debugging_enabled)
+  return __builtin_is_debugging_enabled();
+#else
+  return library_provided_fallback();
+#endif
+}
+```
+
+**Description**:
+
+The builtin takes no arguments and returns `bool`. It is not a constant
+expression. Each call is a distinct observation of the current state and is not
+merged, removed, or reordered with other calls; see
+[`llvm.is.debugging.enabled`](https://llvm.org/docs/LangRef.html#llvm-is-debugging-enabled).
+The builtin does not query the operating system or a runtime library, so any
+fallback is up to the user.
+
+Query for this feature with `__has_builtin(__builtin_is_debugging_enabled)`.
+This is true only if the target has a hardware query of the debugging state. In
+offloading compilations, only the current compilation target is considered, so
+host and device passes may differ. Calling the builtin on a target that does not
+support it is an error.
+
 ### `__builtin_cpu_supports`
 
 **Syntax**:
