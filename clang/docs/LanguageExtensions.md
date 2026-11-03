@@ -3507,6 +3507,11 @@ offloading compilations, only the current compilation target is considered, so
 host and device passes may differ. Calling the builtin on a target that does not
 support it is an error.
 
+On AMDGPU, the builtin is available on subtargets that provide the
+`debugging-enabled-query` feature; see the
+[AMDGPU backend documentation](https://llvm.org/docs/AMDGPUUsage.html) for the
+list of supported processors.
+
 ### `__builtin_cpu_supports`
 
 **Syntax**:

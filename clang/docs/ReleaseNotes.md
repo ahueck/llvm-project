@@ -328,7 +328,8 @@ documentation](CIR/index.md) for more information regarding ClangIR's status and
   `constexpr` function body rules introduced in C++23.
 
 - Added `__builtin_is_debugging_enabled`, a runtime query of whether debugging
-  is enabled for the current execution context.
+  is enabled for the current execution context. It is supported on AMDGPU
+  subtargets with the `debugging-enabled-query` feature.
 
 - Added support for the `__builtin_strlcat` and `__builtin_strlcpy` builtins.
 

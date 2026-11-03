@@ -2814,6 +2814,7 @@ def AMDGPUFrontendVisibleFeatures {
   FeatureCIInsts,
   FeatureClusters, FeatureCubeInsts, FeatureCvtPkNormVOP2Insts,
   FeatureCvtSrPkBF16F32Inst, FeatureDLInsts, FeatureDPP,
+  FeatureDebuggingEnabledQuery,
   FeatureDot10Insts, FeatureDot11Insts, FeatureDot12Insts,
   FeatureDot13Insts, FeatureDot1Insts, FeatureDot2Insts,
   FeatureDot3Insts, FeatureDot4Insts, FeatureDot5Insts,

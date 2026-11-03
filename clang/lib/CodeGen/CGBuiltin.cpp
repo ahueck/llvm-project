@@ -4181,6 +4181,10 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
     Function *F = CGM.getIntrinsic(Intrinsic::readsteadycounter);
     return RValue::get(Builder.CreateCall(F));
   }
+  case Builtin::BI__builtin_is_debugging_enabled: {
+    Function *F = CGM.getIntrinsic(Intrinsic::is_debugging_enabled);
+    return RValue::get(Builder.CreateCall(F));
+  }
   case Builtin::BI__builtin___clear_cache: {
     Value *Begin = EmitScalarExpr(E->getArg(0));
     Value *End = EmitScalarExpr(E->getArg(1));
